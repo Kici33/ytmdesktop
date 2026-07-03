@@ -176,6 +176,10 @@ function mapYTMThumbnails(thumbnail: YTMThumbnail) {
   };
 }
 
+function mapYTMThumbnailList(thumbnails?: YTMThumbnail[]) {
+  return Array.isArray(thumbnails) ? thumbnails.map(mapYTMThumbnails) : [];
+}
+
 function mapCounterpart(counterpart: YTMPlayerQueueItemCounterpart) {
   // Explicit mapping to keep a consistent API
   // If YouTube Music changes how this is presented internally then it's easier to update without breaking the API
@@ -187,13 +191,13 @@ function transformPlaylistPanelVideoRenderer(
   counterpart?: YTMPlayerQueueItemCounterpart[]
 ): PlayerQueueItem {
   return {
-    thumbnails: playlistPanelVideoRenderer.thumbnail ? playlistPanelVideoRenderer.thumbnail.thumbnails.map(mapYTMThumbnails) : [],
+    thumbnails: mapYTMThumbnailList(playlistPanelVideoRenderer.thumbnail?.thumbnails),
     title: getYTMTextRun(playlistPanelVideoRenderer.title?.runs ?? [{ text: "" }]),
     author: getYTMTextRun(playlistPanelVideoRenderer.shortBylineText?.runs ?? [{ text: "" }]),
     duration: getYTMTextRun(playlistPanelVideoRenderer.lengthText?.runs ?? [{ text: "" }]),
     selected: playlistPanelVideoRenderer.selected,
     videoId: playlistPanelVideoRenderer.videoId,
-    counterparts: counterpart ? counterpart.map(mapCounterpart) : null
+    counterparts: Array.isArray(counterpart) ? counterpart.map(mapCounterpart) : null
   };
 }
 
@@ -363,7 +367,7 @@ class PlayerStateStore {
       album: album?.text ?? null,
       albumId: album?.id ?? null,
       likeStatus: transformLikeStatus(likeStatus),
-      thumbnails: videoDetails.thumbnail ? videoDetails.thumbnail.thumbnails.map(mapYTMThumbnails) : [], // There are cases where the thumbnails simply don't exist on the videoDetails but can be found via other means. Podcasts notably can do this
+      thumbnails: mapYTMThumbnailList(videoDetails.thumbnail?.thumbnails), // There are cases where the thumbnails simply don't exist on the videoDetails but can be found via other means. Podcasts notably can do this
       durationSeconds: parseInt(videoDetails.lengthSeconds),
       id: videoDetails.videoId,
       videoType: transformVideoType(videoDetails.musicVideoType),
@@ -381,8 +385,8 @@ class PlayerStateStore {
     muted: boolean | null,
     adPlaying: boolean | null
   ) {
-    const queueItems = queueState ? queueState.items?.map(mapYTMQueueItems) : [];
-    const automixItems = queueState ? queueState.automixItems?.map(mapYTMQueueItems) : [];
+    const queueItems = Array.isArray(queueState?.items) ? queueState.items.map(mapYTMQueueItems).filter(Boolean) : [];
+    const automixItems = Array.isArray(queueState?.automixItems) ? queueState.automixItems.map(mapYTMQueueItems).filter(Boolean) : [];
     this.queue = queueState
       ? {
           // automixItems comes from an autoplay queue that isn't pushed yet to the main queue. A radio will never have automixItems (weird YTM distinction from autoplay vs radio)
