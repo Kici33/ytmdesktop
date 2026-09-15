@@ -2,6 +2,7 @@
 name: Application Publish
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v*"
