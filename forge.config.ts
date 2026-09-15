@@ -69,8 +69,8 @@ const config: ForgeConfig = {
       name: "@electron-forge/publisher-github",
       config: {
         repository: {
-          owner: process.env.YTMD_UPDATE_FEED_OWNER ?? "ytmdesktop",
-          name: process.env.YTMD_UPDATE_FEED_REPOSITORY ?? "ytmdesktop"
+          owner: process.env.YTMD_UPDATE_FEED_OWNER || process.env.GITHUB_REPOSITORY_OWNER || "ytmdesktop",
+          name: process.env.YTMD_UPDATE_FEED_REPOSITORY || process.env.GITHUB_REPOSITORY?.split("/")[1] || "ytmdesktop"
         }
       }
     }
