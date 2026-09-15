@@ -10,7 +10,7 @@ type Player = {
 
 export default class ListenTogether {
   private server: Awaited<ReturnType<typeof createListenServer>>;
-  private status: ListenStatus = { role: "idle", invite: "", error: "", connected: false, snapshot: null };
+  private status: ListenStatus = { role: "idle", invite: "", error: "", connected: false, allowControls: false, snapshot: null, requests: [] };
   private endpoint = "";
   private token = "";
   private timer: ReturnType<typeof setTimeout>;
@@ -20,6 +20,12 @@ export default class ListenTogether {
   private holdUntil = 0;
   private lastLocalVideoId: string | null = null;
   private playNowBusy = false;
+  private hostTrackEndedAt = 0;
+  private lastPartyVideoId: string | null = null;
+  private lastPartyPlaying = false;
+  private syncQuietUntil = 0;
+  private syncedOnPartySince = 0;
+  private playNowCooldownUntil = 0;
 
   constructor(private player: Player) {}
 
@@ -31,7 +37,11 @@ export default class ListenTogether {
   }
 
   public getStatus(): ListenStatus {
-    if (this.server) this.status.snapshot = this.server.snapshot();
+    if (this.server) {
+      this.status.snapshot = this.server.snapshot();
+      this.status.requests = this.server.requests();
+    }
+    this.status.allowControls = this.status.snapshot?.allowControls === true;
     return this.status;
   }
 
@@ -49,7 +59,7 @@ export default class ListenTogether {
     }
     this.server = server;
     url.hash = server.inviteToken;
-    this.status = { role: "host", invite: url.toString(), error: "", connected: true, snapshot: server.snapshot() };
+    this.status = { role: "host", invite: url.toString(), error: "", connected: true, allowControls: false, snapshot: server.snapshot(), requests: [] };
     return this.getStatus();
   }
 
@@ -93,7 +103,13 @@ export default class ListenTogether {
     this.guestReady = false;
     this.holdVideoId = null;
     this.lastLocalVideoId = null;
-    this.status = { role: "guest", invite: "", connected: true, error: "", snapshot: null };
+    this.hostTrackEndedAt = 0;
+    this.lastPartyVideoId = null;
+    this.lastPartyPlaying = false;
+    this.syncQuietUntil = 0;
+    this.syncedOnPartySince = 0;
+    this.playNowCooldownUntil = 0;
+    this.status = { role: "guest", invite: "", connected: true, error: "", snapshot: null, requests: [], allowControls: false };
     const generation = ++this.generation;
     void this.poll(generation);
     return this.getStatus();
@@ -142,12 +158,23 @@ export default class ListenTogether {
       )
         throw new Error("Invalid session state.");
       this.status.snapshot = snapshot;
+      this.status.allowControls = snapshot.allowControls;
       this.status.connected = true;
       this.status.error = "";
       if (this.holdVideoId && Date.now() < this.holdUntil && p.videoId !== this.holdVideoId) {
         // Guest picked a song; wait for the host before syncing away from it.
       } else {
         if (this.holdVideoId && p.videoId === this.holdVideoId) this.holdVideoId = null;
+        const nearEnd = p.duration > 0 && p.position >= Math.max(0, p.duration - 1.5);
+        if (this.lastPartyPlaying && nearEnd) this.hostTrackEndedAt = Date.now();
+        if (p.playing && !nearEnd) this.hostTrackEndedAt = 0;
+        const partyChanged = p.videoId !== this.lastPartyVideoId;
+        this.lastPartyPlaying = p.playing;
+        this.lastPartyVideoId = p.videoId;
+        // Queue rebuild + navigation after a host track change briefly flips local video ids.
+        // Keep guests following during that window instead of bouncing playNow back to the host.
+        this.syncQuietUntil = Date.now() + (partyChanged ? 12000 : 4000);
+        if (partyChanged) this.syncedOnPartySince = 0;
         await this.player.sync({ ...p, position: p.position + (p.playing && !p.buffering && !p.adPlaying ? Math.min((Date.now() - start) / 2000, 2) : 0) });
         this.guestReady = true;
         if (p.videoId) this.lastLocalVideoId = p.videoId;
@@ -168,18 +195,33 @@ export default class ListenTogether {
     return this.getStatus();
   }
 
-  /** When a guest starts a different song locally, switch the party to it. */
+  /** When a guest deliberately starts a different song locally, switch the party to it. */
   public onLocalPlayback(videoId: string | null, adPlaying: boolean) {
     if (this.status.role !== "guest" || !this.guestReady || adPlaying || this.playNowBusy) return;
     if (!videoId || !/^[A-Za-z0-9_-]{11}$/.test(videoId)) return;
-    const partyId = this.status.snapshot?.playback?.videoId ?? null;
-    if (videoId === partyId || videoId === this.lastLocalVideoId || videoId === this.holdVideoId) {
+    const party = this.status.snapshot?.playback;
+    const partyId = party?.videoId ?? null;
+    if (videoId === partyId) {
       this.lastLocalVideoId = videoId;
+      if (!this.syncedOnPartySince) this.syncedOnPartySince = Date.now();
       return;
     }
+    // Still catching up after host/queue sync — never send playNow from transitional local ids.
+    if (Date.now() < this.syncQuietUntil || Date.now() < this.playNowCooldownUntil) return;
+    if (videoId === this.lastLocalVideoId || videoId === this.holdVideoId) return;
+    // End of track: YouTube autoplay advances guests while the host stays put.
+    const hostNearEnd = !!party && party.duration > 0 && party.position >= Math.max(0, party.duration - 1.5);
+    const justEnded = this.hostTrackEndedAt !== 0 && Date.now() - this.hostTrackEndedAt < 12000;
+    if (hostNearEnd || justEnded) return;
+    // Only treat it as a guest pick after they've been stably following the current party track.
+    const stableOnParty = this.syncedOnPartySince !== 0 && Date.now() - this.syncedOnPartySince >= 8000;
+    const leftSyncedTrack = this.lastLocalVideoId !== null && this.lastLocalVideoId === partyId;
+    if (!stableOnParty || !leftSyncedTrack) return;
     this.lastLocalVideoId = videoId;
+    this.syncedOnPartySince = 0;
     this.holdVideoId = videoId;
     this.holdUntil = Date.now() + 8000;
+    this.playNowCooldownUntil = Date.now() + 15000;
     this.playNowBusy = true;
     void this.command({ type: "playNow", videoId })
       .catch(() => {
@@ -203,13 +245,19 @@ export default class ListenTogether {
     this.holdVideoId = null;
     this.lastLocalVideoId = null;
     this.playNowBusy = false;
+    this.hostTrackEndedAt = 0;
+    this.lastPartyVideoId = null;
+    this.lastPartyPlaying = false;
+    this.syncQuietUntil = 0;
+    this.syncedOnPartySince = 0;
+    this.playNowCooldownUntil = 0;
     if (this.server) {
       await this.server.app.close();
       this.server = undefined;
     } else if (this.token) await this.request("/listen/leave", {}).catch(() => {});
     this.token = "";
     this.endpoint = "";
-    this.status = { role: "idle", invite: "", connected: false, error: "", snapshot: null };
+    this.status = { role: "idle", invite: "", connected: false, error: "", snapshot: null, requests: [], allowControls: false };
     return this.getStatus();
   }
 }

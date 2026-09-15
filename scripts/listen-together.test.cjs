@@ -64,11 +64,17 @@ test("session authentication, permissions, serialized queue additions and revoca
   assert.equal(join.statusCode, 200);
   const token = join.json().token;
   assert.notEqual(token, server.inviteToken);
+  assert.equal(server.requests()[0].kind, "join");
+  assert.equal(server.requests()[0].memberName, "Guest");
   assert.equal((await request("GET", "/listen/state", token)).json().members.length, 2);
   assert.equal((await request("POST", "/listen/command", token, { type: "pause" })).statusCode, 403);
+  assert.equal(server.requests()[0].ok, false);
+  assert.match(server.requests()[0].summary, /pause/);
   assert.equal((await request("POST", "/listen/command", token, { type: "add", videoId: "abcdefghijk", next: true })).statusCode, 403);
   assert.equal((await request("POST", "/listen/command", token, { type: "playNow", videoId: "12345678901" })).statusCode, 200);
   assert.equal(calls.at(-1)?.type, "playNow");
+  assert.equal(server.requests()[0].ok, true);
+  assert.match(server.requests()[0].summary, /play now/);
   await Promise.all([0, 1].map(() => request("POST", "/listen/command", token, { type: "add", videoId: "abcdefghijk", next: false })));
   assert.equal(calls.filter(c => c.type === "add").length, 2);
   server.setControls(true);
@@ -79,6 +85,21 @@ test("session authentication, permissions, serialized queue additions and revoca
   await request("POST", "/listen/leave", token, {});
   assert.equal((await request("GET", "/listen/state", token)).statusCode, 401);
   assert.equal(server.snapshot().members.length, 1);
+});
+
+test("enabling guest controls applies to guests already in the session", async t => {
+  const server = await createListenServer({ name: "Host", getPlayback: playback, command: async () => {} });
+  t.after(() => server.app.close());
+  const request = (method, url, token, payload) => server.app.inject({ method, url, headers: token ? { authorization: `Bearer ${token}` } : {}, payload });
+  const join = await request("POST", "/listen/join", server.inviteToken, { name: "Guest" });
+  const token = join.json().token;
+  assert.equal((await request("POST", "/listen/command", token, { type: "pause" })).statusCode, 403);
+  assert.equal(join.json().snapshot.allowControls, false);
+  server.setControls(true);
+  assert.equal((await request("GET", "/listen/state", token)).json().allowControls, true);
+  assert.equal((await request("POST", "/listen/command", token, { type: "pause" })).statusCode, 200);
+  server.setControls(false);
+  assert.equal((await request("POST", "/listen/command", token, { type: "play" })).statusCode, 403);
 });
 
 test("queued controls are rejected when the host revokes permission", async t => {
@@ -179,6 +200,11 @@ test("guest playing a local song switches the party and holds sync until the hos
   t.after(() => guest.leave());
   await guest.join("Friend", `http://127.0.0.1:${server.app.server.address().port}#${server.inviteToken}`);
   await until(() => received.length > 0);
+  guest.onLocalPlayback("abcdefghijk", false);
+  // Pretend the guest has been stably following long enough, past the post-sync quiet window.
+  guest.syncedOnPartySince = Date.now() - 9000;
+  guest.syncQuietUntil = 0;
+  guest.lastLocalVideoId = "abcdefghijk";
   const before = received.length;
   guest.onLocalPlayback("12345678901", false);
   await until(() => commands.some(c => c.type === "playNow" && c.videoId === "12345678901"));
@@ -186,6 +212,64 @@ test("guest playing a local song switches the party and holds sync until the hos
   assert.equal(received.length, before);
   assert.equal(received.at(-1).videoId, "abcdefghijk");
   await until(() => received.some(p => p.videoId === "12345678901"));
+});
+
+test("guest does not bounce playNow back when the host changes songs", async t => {
+  const state = playback();
+  const commands = [];
+  const server = await createListenServer({
+    name: "Host",
+    getPlayback: () => state,
+    command: async c => {
+      commands.push(c);
+    }
+  });
+  await server.app.listen({ host: "127.0.0.1", port: 0 });
+  t.after(() => server.app.close());
+  const guest = new ListenTogether({
+    getPlayback: playback,
+    command: async () => {},
+    sync: async () => {}
+  });
+  t.after(() => guest.leave());
+  await guest.join("Friend", `http://127.0.0.1:${server.app.server.address().port}#${server.inviteToken}`);
+  await until(() => guest.getStatus().snapshot?.playback?.videoId === "abcdefghijk");
+  guest.onLocalPlayback("abcdefghijk", false);
+  state.videoId = "12345678901";
+  await until(() => guest.getStatus().snapshot?.playback?.videoId === "12345678901");
+  guest.onLocalPlayback("Bp1w5eKY8wo", false);
+  guest.onLocalPlayback("qJ2dhhDGLBg", false);
+  guest.onLocalPlayback("12345678901", false);
+  await delay(300);
+  assert.equal(commands.some(c => c.type === "playNow"), false);
+});
+
+test("guest autoplay after the host track ends does not switch the party", async t => {
+  const state = playback();
+  state.position = 179;
+  state.playing = false;
+  const commands = [];
+  const server = await createListenServer({
+    name: "Host",
+    getPlayback: () => state,
+    command: async c => {
+      commands.push(c);
+    }
+  });
+  await server.app.listen({ host: "127.0.0.1", port: 0 });
+  t.after(() => server.app.close());
+  const guest = new ListenTogether({
+    getPlayback: playback,
+    command: async () => {},
+    sync: async () => {}
+  });
+  t.after(() => guest.leave());
+  await guest.join("Friend", `http://127.0.0.1:${server.app.server.address().port}#${server.inviteToken}`);
+  await until(() => guest.getStatus().snapshot?.playback?.videoId === "abcdefghijk");
+  guest.onLocalPlayback("abcdefghijk", false);
+  guest.onLocalPlayback("12345678901", false);
+  await delay(200);
+  assert.equal(commands.some(c => c.type === "playNow"), false);
 });
 
 test("malformed host state is not forwarded to the player", async t => {
@@ -207,8 +291,19 @@ test("malformed host state is not forwarded to the player", async t => {
   assert.match(guest.getStatus().error, /Invalid session state/);
 });
 
-function playerFixture() {
+function playerFixture(queueItems) {
   const calls = [];
+  const items =
+    queueItems ??
+    [
+      {
+        playlistPanelVideoRenderer: {
+          videoId: "abcdefghijk",
+          navigationEndpoint: { watchEndpoint: { videoId: "abcdefghijk" } }
+        }
+      }
+    ];
+  const queueState = { items, queueContextParams: "ctx", nextQueueItemId: 1 };
   const api = {
     isReady: () => true,
     getPlayerResponse: () => ({ videoDetails: { videoId: "abcdefghijk" } }),
@@ -228,11 +323,37 @@ function playerFixture() {
     }
   };
   const queue = {
-    dispatch: action => calls.push(["queue", action])
+    dispatch: action => {
+      calls.push(["queue", action]);
+      if (action.type === "CLEAR") queueState.items = [];
+      if (action.type === "REMOVE_ITEM") queueState.items.splice(action.payload, 1);
+      if (action.type === "ADD_ITEMS") queueState.items.splice(action.payload.index, 0, ...action.payload.items);
+      if (action.type === "MOVE_ITEM") {
+        const [item] = queueState.items.splice(action.payload.fromIndex, 1);
+        queueState.items.splice(action.payload.toIndex, 0, item);
+      }
+    },
+    queue: { store: { store: { getState: () => ({ queue: queueState }) } } }
+  };
+  const app = {
+    networkManager: {
+      fetch: async (path, body) => {
+        calls.push(["fetch", path, body]);
+        return {
+          queueDatas: (body.videoIds ?? []).map(videoId => ({
+            content: { playlistPanelVideoRenderer: { videoId, navigationEndpoint: { watchEndpoint: { videoId } } } }
+          }))
+        };
+      }
+    }
   };
   const context = {
     document: {
-      querySelector: selector => (selector === "#queue" ? queue : element),
+      querySelector: selector => {
+        if (selector === "#queue") return queue;
+        if (selector === "ytmusic-app") return app;
+        return element;
+      },
       dispatchEvent: e => calls.push(["navigate", e])
     },
     CustomEvent: class {
@@ -246,16 +367,7 @@ function playerFixture() {
         ytmStore: {
           getState: () => ({
             player: { adPlaying: false },
-            queue: {
-              items: [
-                {
-                  playlistPanelVideoRenderer: {
-                    videoId: "abcdefghijk",
-                    navigationEndpoint: { watchEndpoint: { videoId: "abcdefghijk" } }
-                  }
-                }
-              ]
-            }
+            queue: queueState
           })
         }
       }
@@ -263,24 +375,55 @@ function playerFixture() {
     Date
   };
   const run = vm.runInNewContext(fs.readFileSync("src/renderer/ytmview/scripts/listentogether.script.js", "utf8"), context);
-  return { calls, api, run };
+  return { calls, api, run, queueState };
 }
-test("player sync corrects drift, follows pause, avoids repeated navigation and skips host ads", () => {
+test("player sync corrects drift, follows pause, avoids repeated navigation and skips host ads", async () => {
   const { run, calls } = playerFixture();
-  run({ type: "sync", playback: { ...playback(), position: 30 } });
+  await run({ type: "sync", playback: { ...playback(), position: 30 } });
   assert.deepEqual(calls[0], ["seek", 30]);
   calls.length = 0;
-  run({ type: "sync", playback: { ...playback(), position: 10.5 } });
+  await run({ type: "sync", playback: { ...playback(), position: 10.5 } });
   assert.equal(calls.length, 0);
-  run({ type: "sync", playback: { ...playback(), playing: false, position: 10 } });
+  await run({ type: "sync", playback: { ...playback(), playing: false, position: 10 } });
   assert.deepEqual(calls[0], ["pause"]);
   calls.length = 0;
-  run({ type: "sync", playback: { ...playback(), adPlaying: true } });
+  await run({ type: "sync", playback: { ...playback(), playing: false, position: 179.5 } });
+  assert.deepEqual(calls[0], ["pause"]);
+  assert.equal(calls.some(c => c[0] === "seek"), false);
+  calls.length = 0;
+  await run({ type: "sync", playback: { ...playback(), adPlaying: true } });
   assert.equal(calls.length, 0);
-  run({ type: "sync", playback: { ...playback(), videoId: "12345678901" } });
-  run({ type: "sync", playback: { ...playback(), videoId: "12345678901" } });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], "navigate");
+  await run({ type: "sync", playback: { ...playback(), videoId: "12345678901" } });
+  await run({ type: "sync", playback: { ...playback(), videoId: "12345678901" } });
+  assert.equal(calls.filter(c => c[0] === "navigate").length, 1);
+});
+test("guest queue is rebuilt to match the shared listen-together queue", async () => {
+  const { run, calls, queueState } = playerFixture([]);
+  await run({
+    type: "sync",
+    playback: {
+      ...playback(),
+      queue: [
+        { index: 0, videoId: "abcdefghijk", title: "Song", author: "Artist" },
+        { index: 1, videoId: "12345678901", title: "Other", author: "Artist" }
+      ]
+    }
+  });
+  assert.equal(calls.some(c => c[0] === "fetch"), true);
+  assert.equal(queueState.items.map(item => item.playlistPanelVideoRenderer.videoId).join(","), "abcdefghijk,12345678901");
+  calls.length = 0;
+  await run({
+    type: "sync",
+    playback: {
+      ...playback(),
+      position: 10.2,
+      queue: [
+        { index: 0, videoId: "abcdefghijk", title: "Song", author: "Artist" },
+        { index: 1, videoId: "12345678901", title: "Other", author: "Artist" }
+      ]
+    }
+  });
+  assert.equal(calls.some(c => c[0] === "fetch" || (c[0] === "queue" && c[1].type === "CLEAR")), false);
 });
 test("queue actions use YouTube service requests and preserve play-next position", async () => {
   const { run, calls } = playerFixture();

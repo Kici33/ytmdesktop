@@ -15,12 +15,24 @@ export type ListenSnapshot = {
   members: { id: string; name: string }[];
   allowControls: boolean;
 };
+export type ListenGuestRequest = {
+  id: string;
+  at: number;
+  memberId: string;
+  memberName: string;
+  kind: "join" | "leave" | "command";
+  summary: string;
+  ok: boolean;
+  error?: string;
+};
 export type ListenStatus = {
   role: "idle" | "host" | "guest";
   invite: string;
   error: string;
   connected: boolean;
+  allowControls: boolean;
   snapshot: ListenSnapshot | null;
+  requests: ListenGuestRequest[];
 };
 export type ListenCommand =
   | { type: "add"; videoId: string; next: boolean }
@@ -28,6 +40,27 @@ export type ListenCommand =
   | { type: "play" | "pause" | "next" }
   | { type: "seek"; position: number }
   | { type: "select" | "remove"; index: number; videoId: string };
+
+export function summarizeListenCommand(command: ListenCommand): string {
+  switch (command.type) {
+    case "add":
+      return command.next ? `play next ${command.videoId}` : `add ${command.videoId}`;
+    case "playNow":
+      return `play now ${command.videoId}`;
+    case "play":
+      return "play";
+    case "pause":
+      return "pause";
+    case "next":
+      return "next";
+    case "seek":
+      return `seek to ${Math.floor(command.position)}s`;
+    case "select":
+      return `play queue #${command.index + 1} (${command.videoId})`;
+    case "remove":
+      return `remove queue #${command.index + 1} (${command.videoId})`;
+  }
+}
 
 export function parseVideoId(input: string): string {
   if (typeof input !== "string" || input.length > 2048) throw new Error("Enter a YouTube Music song link or video ID.");

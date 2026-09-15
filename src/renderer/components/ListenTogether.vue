@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { ListenCommand, ListenStatus, parseVideoId } from "~shared/listen-together";
 
-const status = ref<ListenStatus>({ role: "idle", invite: "", error: "", connected: false, snapshot: null });
+const status = ref<ListenStatus>({ role: "idle", invite: "", error: "", connected: false, allowControls: false, snapshot: null, requests: [] });
 const name = ref("");
 const address = ref("");
 const invite = ref("");
@@ -11,16 +11,20 @@ const error = ref("");
 const notice = ref("");
 const busy = ref(false);
 const tab = ref("host");
+const sessionTab = ref("session");
 const addresses = ref<string[]>([]);
 const position = ref(0);
 let timer: ReturnType<typeof setTimeout>;
 let mounted = true;
-const canControl = computed(() => status.value.role === "host" || status.value.snapshot?.allowControls);
+const canControl = computed(() => status.value.role === "host" || status.value.allowControls || status.value.snapshot?.allowControls === true);
+const canManageQueue = computed(() => status.value.role === "host" || status.value.role === "guest");
 const playback = computed(() => status.value.snapshot?.playback);
+const guestRequests = computed(() => status.value.requests ?? []);
 const time = (seconds: number) =>
   `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60)
     .toString()
     .padStart(2, "0")}`;
+const requestTime = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 async function refresh() {
   try {
@@ -40,7 +44,10 @@ async function action(type: string, payload?: Record<string, unknown>) {
   try {
     const result = await window.ytmd.listenTogether(type, payload);
     if (result.error) throw new Error(result.error);
-    if (result.status) status.value = result.status;
+    if (result.status) {
+      status.value = result.status;
+      if (result.status.role === "idle") sessionTab.value = "session";
+    }
     if (type === "copy") notice.value = "Invite copied. Send it to your friends.";
     return true;
   } catch (e) {
@@ -52,7 +59,12 @@ async function action(type: string, payload?: Record<string, unknown>) {
 }
 const command = (value: ListenCommand) => action("command", value);
 const selectInvite = (event: Event) => (event.target as HTMLInputElement).select();
-const changeControls = (event: Event) => action("controls", { enabled: (event.target as HTMLInputElement).checked });
+const changeControls = async (event: Event) => {
+  const enabled = (event.target as HTMLInputElement).checked;
+  if (await action("controls", { enabled })) {
+    notice.value = enabled ? "Guests can now pause, skip, seek and choose songs." : "Guest playback controls are off again.";
+  }
+};
 async function add(next: boolean) {
   try {
     if (await command({ type: "add", videoId: parseVideoId(song.value), next })) {
@@ -106,52 +118,77 @@ onUnmounted(() => {
         <button :disabled="busy" @click="action('leave')">{{ status.role === "host" ? "End session" : "Leave" }}</button>
       </div>
       <template v-if="status.role === 'host'">
-        <label>Invite friends<input :value="status.invite" readonly @focus="selectInvite" /></label>
-        <button :disabled="busy" @click="action('copy')">Copy invite</button>
-        <label class="permission"
-          ><input type="checkbox" :checked="status.snapshot?.allowControls" :disabled="busy" @change="changeControls" />Let guests pause, skip, seek, choose and
-          remove songs</label
-        >
-      </template>
-      <p class="muted">{{ status.snapshot?.members.map(member => member.name).join(" · ") }}</p>
-      <div v-if="playback" class="now-playing">
-        <strong>{{ playback.title }}</strong
-        ><span class="muted">{{ playback.author }}</span>
-        <p>{{ time(playback.position) }} / {{ time(playback.duration) }} <span v-if="playback.adPlaying"> · Host is playing an ad</span></p>
-        <div v-if="canControl" class="buttons">
-          <button :disabled="busy" @click="command({ type: playback.playing ? 'pause' : 'play' })">{{ playback.playing ? "Pause" : "Play" }}</button>
-          <button :disabled="busy" @click="command({ type: 'next' })">Next song</button>
-          <label class="seek">Seek to (seconds)<input v-model.number="position" type="number" min="0" :max="playback.duration" /></label>
-          <button :disabled="busy" @click="command({ type: 'seek', position })">Seek</button>
-        </div>
-      </div>
-      <form @submit.prevent="add(false)">
-        <label>Add a song<input v-model="song" placeholder="Paste a YouTube Music song link" /></label>
         <div class="buttons">
-          <button class="primary" :disabled="busy || !song.trim()">Add to queue</button>
-          <button v-if="canControl" type="button" :disabled="busy || !song.trim()" @click="add(true)">Play next</button>
+          <button :class="{ selected: sessionTab === 'session' }" @click="sessionTab = 'session'">Session</button>
+          <button :class="{ selected: sessionTab === 'requests' }" @click="sessionTab = 'requests'">
+            Guest requests<span v-if="guestRequests.length" class="muted"> ({{ guestRequests.length }})</span>
+          </button>
         </div>
-      </form>
-      <h3>
-        Shared queue <span class="muted">({{ playback?.queue.length ?? 0 }})</span>
-      </h3>
-      <p v-if="!playback?.queue.length" class="muted">The queue is empty. Add a song to get started.</p>
-      <ol class="queue">
-        <li v-for="track in playback?.queue" :key="`${track.index}-${track.videoId}`" :class="{ current: track.videoId === playback.videoId }">
-          <div>
-            <strong>{{ track.title }}</strong
-            ><span class="muted">{{ track.author }}</span>
+      </template>
+      <template v-if="status.role === 'host' && sessionTab === 'requests'">
+        <h3>Guest requests</h3>
+        <p class="muted">Joins, leaves and commands from friends in this session.</p>
+        <p v-if="!guestRequests.length" class="muted">No guest activity yet.</p>
+        <ol class="requests">
+          <li v-for="request in guestRequests" :key="request.id" :class="{ failed: !request.ok }">
+            <div>
+              <strong>{{ request.memberName }}</strong>
+              <span class="muted">{{ request.summary }}</span>
+              <span v-if="request.error" class="error">{{ request.error }}</span>
+            </div>
+            <span class="muted">{{ requestTime(request.at) }}</span>
+          </li>
+        </ol>
+      </template>
+      <template v-else>
+        <template v-if="status.role === 'host'">
+          <label>Invite friends<input :value="status.invite" readonly @focus="selectInvite" /></label>
+          <button :disabled="busy" @click="action('copy')">Copy invite</button>
+          <label class="permission"
+            ><input type="checkbox" :checked="status.allowControls || status.snapshot?.allowControls" :disabled="busy" @change="changeControls" />Let guests
+            pause, skip, seek, choose and remove songs</label
+          >
+        </template>
+        <p class="muted">{{ status.snapshot?.members.map(member => member.name).join(" · ") }}</p>
+        <div v-if="playback" class="now-playing">
+          <strong>{{ playback.title }}</strong
+          ><span class="muted">{{ playback.author }}</span>
+          <p>{{ time(playback.position) }} / {{ time(playback.duration) }} <span v-if="playback.adPlaying"> · Host is playing an ad</span></p>
+          <div v-if="canControl" class="buttons">
+            <button :disabled="busy" @click="command({ type: playback.playing ? 'pause' : 'play' })">{{ playback.playing ? "Pause" : "Play" }}</button>
+            <button :disabled="busy" @click="command({ type: 'next' })">Next song</button>
+            <label class="seek">Seek to (seconds)<input v-model.number="position" type="number" min="0" :max="playback.duration" /></label>
+            <button :disabled="busy" @click="command({ type: 'seek', position })">Seek</button>
           </div>
-          <div v-if="canControl" class="buttons queue-actions">
-            <button :disabled="busy" @click="command({ type: 'select', index: track.index, videoId: track.videoId })">Play</button>
-            <button :disabled="busy" @click="command({ type: 'remove', index: track.index, videoId: track.videoId })">Remove</button>
+        </div>
+        <form @submit.prevent="add(false)">
+          <label>Add a song<input v-model="song" placeholder="Paste a YouTube Music song link" /></label>
+          <div class="buttons">
+            <button class="primary" :disabled="busy || !song.trim()">Add to queue</button>
+            <button v-if="canControl" type="button" :disabled="busy || !song.trim()" @click="add(true)">Play next</button>
           </div>
-        </li>
-      </ol>
-      <p class="muted">
-        Playing a song in YouTube Music switches the party to that track. Ads, buffering and songs unavailable to a listener can temporarily interrupt
-        synchronization. Playback catches up once the song is ready.
-      </p>
+        </form>
+        <h3>
+          Shared queue <span class="muted">({{ playback?.queue.length ?? 0 }})</span>
+        </h3>
+        <p v-if="!playback?.queue.length" class="muted">The queue is empty. Add a song to get started.</p>
+        <ol class="queue">
+          <li v-for="track in playback?.queue" :key="`${track.index}-${track.videoId}`" :class="{ current: track.videoId === playback.videoId }">
+            <div>
+              <strong>{{ track.title }}</strong
+              ><span class="muted">{{ track.author }}</span>
+            </div>
+            <div v-if="canManageQueue" class="buttons queue-actions">
+              <button v-if="canControl" :disabled="busy" @click="command({ type: 'select', index: track.index, videoId: track.videoId })">Play</button>
+              <button :disabled="busy" @click="command({ type: 'remove', index: track.index, videoId: track.videoId })">Remove</button>
+            </div>
+          </li>
+        </ol>
+        <p class="muted">
+          The shared queue stays mirrored in YouTube Music for everyone. Anyone can add or remove songs; pause/skip/seek still follow host permissions. Playing
+          a song in YouTube Music switches the party to that track. Ads, buffering and unavailable songs can briefly interrupt sync.
+        </p>
+      </template>
     </template>
   </section>
 </template>
@@ -266,6 +303,30 @@ button:disabled {
 .queue-actions {
   margin: 0;
   flex-shrink: 0;
+}
+.requests {
+  padding: 0;
+  list-style: none;
+}
+.requests li {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid #333;
+}
+.requests li.failed {
+  background: #2a1518;
+}
+.requests li strong {
+  display: block;
+  font-size: 13px;
+}
+.requests .error {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
 }
 details {
   margin: 12px 0;

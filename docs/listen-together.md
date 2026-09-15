@@ -18,11 +18,12 @@ The session server listens on port 9864 only while hosting. This is separate fro
 
 Enter your name, choose **Join a friend**, paste the complete invite, and click **Join session**. Each app plays music directly from YouTube; audio and account credentials are never streamed through the host.
 
-- Everyone can add a song by pasting a YouTube/YouTube Music song link or an 11-character video ID.
-- The queue shown in this panel is the host's YouTube Music queue (up to 500 entries). Queue additions are applied to the host and reflected back to guests.
+- Everyone can add or remove songs. Queue changes apply on the host and are mirrored into each listener’s YouTube Music queue.
+- The queue shown in this panel is the shared Listen together queue (up to 500 entries; guests sync the first 100 into their player).
 - When a guest plays a different song in YouTube Music, the party switches to that song (same as the host navigating to it).
-- The host can pause/play, skip, seek, choose or remove an existing queued song, or add a song to play next.
-- **Let guests pause, skip, seek and choose songs** grants those same playback controls (including remove) to guests. It is off by default and enforced by the server.
+- The host can pause/play, skip, seek, choose an existing queued song, or add a song to play next.
+- **Let guests pause, skip, seek and choose songs** grants those playback controls to guests. It is off by default and enforced by the server.
+- While hosting, open **Guest requests** to see joins, leaves and guest commands (including denied ones).
 - Leaving stops synchronization without changing local volume.
 
 Guests poll once a second and correct drift greater than 1.5 seconds. This is approximate synchronization, not sample-accurate audio. Ads, buffering, unavailable songs and differences between accounts can delay playback. Synchronization skips ads and catches up when playback is ready. On connection loss, the app shows an error and retries; local playback can continue independently. Sessions do not persist across host restarts.

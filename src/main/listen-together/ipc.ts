@@ -20,7 +20,7 @@ export function setupListenTogether(getView: () => BrowserView, getSettings: () 
         if (event.sender !== view.webContents || requestId !== id) return;
         done(typeof error === "string" ? error.slice(0, 200) : undefined);
       };
-      const timeout = setTimeout(() => done("YouTube Music did not respond. Check that the song is available."), 6000);
+      const timeout = setTimeout(() => done("YouTube Music did not respond. Check that the song is available."), command.type === "sync" ? 15000 : 6000);
       ipcMain.on("listenTogether:result", listener);
       view.webContents.send("listenTogether:execute", id, command);
     });
@@ -72,6 +72,22 @@ export function setupListenTogether(getView: () => BrowserView, getSettings: () 
   ipcMain.handle("listenTogether:request", async (event, action: string, payload: Record<string, unknown> = {}) => {
     if (event.sender !== getSettings()?.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error("Unauthorized window.");
     if (action === "status") return { status: session.getStatus(), addresses: session.addresses() };
+    // Permission toggles and invite copy must work even while another session action is in flight.
+    if (action === "controls") {
+      try {
+        return { status: session.controls(payload.enabled === true) };
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : "Session action failed." };
+      }
+    }
+    if (action === "copy") {
+      try {
+        if (session.getStatus().invite) clipboard.writeText(session.getStatus().invite);
+        return { status: session.getStatus() };
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : "Session action failed." };
+      }
+    }
     if (busy) return { error: "Please wait for the previous action to finish." };
     busy = true;
     try {
@@ -85,11 +101,6 @@ export function setupListenTogether(getView: () => BrowserView, getSettings: () 
           return { status: await session.leave() };
         case "command":
           return { status: await session.command(payload) };
-        case "controls":
-          return { status: session.controls(payload.enabled === true) };
-        case "copy":
-          if (session.getStatus().invite) clipboard.writeText(session.getStatus().invite);
-          return { status: session.getStatus() };
         default:
           throw new Error("Unknown session action.");
       }
