@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("ytmd", {
   isDarwin: process.platform === "darwin",
   isLinux: process.platform === "linux",
   isWindows: process.platform === "win32",
+  listenTogether: (action: string, payload?: Record<string, unknown>) => ipcRenderer.invoke("listenTogether:request", action, payload),
   memoryStore: {
     set: (key: string, value: unknown) => memoryStore.set(key, value),
     get: async (key: keyof MemoryStoreSchema) => await memoryStore.get(key),

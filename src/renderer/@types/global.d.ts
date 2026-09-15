@@ -2,6 +2,7 @@ import { WindowsEventArguments } from "~shared/types";
 import Store from "../store-ipc/store";
 import { StoreSchema, MemoryStoreSchema } from "~shared/store/schema";
 import MemoryStore from "../store-ipc/memory-store";
+import { ListenStatus } from "~shared/listen-together";
 
 declare global {
   interface Window {
@@ -10,6 +11,7 @@ declare global {
       isDarwin: boolean;
       isLinux: boolean;
       isWindows: boolean;
+      listenTogether(action: string, payload?: Record<string, unknown>): Promise<{ status?: ListenStatus; addresses?: string[]; error?: string }>;
       store: Store<StoreSchema>;
       memoryStore: MemoryStore<MemoryStoreSchema>;
       safeStorage: {

@@ -17,6 +17,7 @@ import hookPlayerApiEventsScript from "./scripts/hookplayerapievents.script?raw"
 import getPlaylistsScript from "./scripts/getplaylists.script?raw";
 import toggleLikeScript from "./scripts/togglelike.script?raw";
 import toggleDislikeScript from "./scripts/toggledislike.script?raw";
+import listenTogetherScript from "./scripts/listentogether.script?raw";
 
 const store = new Store<StoreSchema>();
 
@@ -258,7 +259,18 @@ window.addEventListener("load", async () => {
       const playerApiReady: boolean = (
         await webFrame.executeJavaScript(`
           (function() {
-            return document.querySelector("ytmusic-app-layout>ytmusic-player-bar").playerApi.isReady();
+            const playerBar = document.querySelector("ytmusic-app-layout>ytmusic-player-bar");
+            if (!playerBar) return false;
+
+            // Newer YTM versions expose the player API on the Polymer controller.
+            if (!playerBar.playerApi && playerBar.polymerController?.playerApi) {
+              Object.defineProperty(playerBar, "playerApi", {
+                configurable: true,
+                get() { return this.polymerController.playerApi; }
+              });
+            }
+
+            return playerBar.playerApi?.isReady() ?? false;
           })
         `)
       )();
@@ -632,6 +644,17 @@ window.addEventListener("load", async () => {
       if (script) {
         (await webFrame.executeJavaScript(script))();
       }
+    }
+  });
+
+  ipcRenderer.on("listenTogether:execute", async (_event, requestId, command) => {
+    try {
+      await (
+        await webFrame.executeJavaScript(listenTogetherScript)
+      )(command);
+      ipcRenderer.send("listenTogether:result", requestId, null);
+    } catch (error) {
+      ipcRenderer.send("listenTogether:result", requestId, error instanceof Error ? error.message : "Playback command failed.");
     }
   });
 
