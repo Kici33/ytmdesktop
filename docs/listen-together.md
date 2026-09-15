@@ -20,9 +20,10 @@ Enter your name, choose **Join a friend**, paste the complete invite, and click 
 
 - Everyone can add a song by pasting a YouTube/YouTube Music song link or an 11-character video ID.
 - The queue shown in this panel is the host's YouTube Music queue (up to 500 entries). Queue additions are applied to the host and reflected back to guests.
-- The host can pause/play, skip, seek, choose an existing queued song, or add a song to play next.
-- **Let guests pause, skip, seek and choose songs** grants those same playback controls to guests. It is off by default and enforced by the server.
-- A guest's normal YouTube Music navigation does not change the shared queue. Use the Listen together panel to make shared changes. Leaving stops synchronization without changing local volume.
+- When a guest plays a different song in YouTube Music, the party switches to that song (same as the host navigating to it).
+- The host can pause/play, skip, seek, choose or remove an existing queued song, or add a song to play next.
+- **Let guests pause, skip, seek and choose songs** grants those same playback controls (including remove) to guests. It is off by default and enforced by the server.
+- Leaving stops synchronization without changing local volume.
 
 Guests poll once a second and correct drift greater than 1.5 seconds. This is approximate synchronization, not sample-accurate audio. Ads, buffering, unavailable songs and differences between accounts can delay playback. Synchronization skips ads and catches up when playback is ready. On connection loss, the app shows an error and retries; local playback can continue independently. Sessions do not persist across host restarts.
 

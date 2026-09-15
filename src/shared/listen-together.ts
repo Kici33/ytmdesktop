@@ -24,9 +24,10 @@ export type ListenStatus = {
 };
 export type ListenCommand =
   | { type: "add"; videoId: string; next: boolean }
+  | { type: "playNow"; videoId: string }
   | { type: "play" | "pause" | "next" }
   | { type: "seek"; position: number }
-  | { type: "select"; index: number; videoId: string };
+  | { type: "select" | "remove"; index: number; videoId: string };
 
 export function parseVideoId(input: string): string {
   if (typeof input !== "string" || input.length > 2048) throw new Error("Enter a YouTube Music song link or video ID.");
@@ -51,6 +52,8 @@ export function validateListenCommand(value: unknown): ListenCommand {
   switch (command.type) {
     case "add":
       return { type: "add", videoId: parseVideoId(command.videoId as string), next: command.next === true };
+    case "playNow":
+      return { type: "playNow", videoId: parseVideoId(command.videoId as string) };
     case "play":
     case "pause":
     case "next":
@@ -60,8 +63,9 @@ export function validateListenCommand(value: unknown): ListenCommand {
         return { type: "seek", position: command.position };
       break;
     case "select":
+    case "remove":
       if (Number.isInteger(command.index) && Number(command.index) >= 0 && Number(command.index) < 500)
-        return { type: "select", index: Number(command.index), videoId: parseVideoId(command.videoId as string) };
+        return { type: command.type, index: Number(command.index), videoId: parseVideoId(command.videoId as string) };
   }
   throw new Error("Invalid session command.");
 }

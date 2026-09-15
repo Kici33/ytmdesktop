@@ -15,6 +15,11 @@ export default class ListenTogether {
   private token = "";
   private timer: ReturnType<typeof setTimeout>;
   private generation = 0;
+  private guestReady = false;
+  private holdVideoId: string | null = null;
+  private holdUntil = 0;
+  private lastLocalVideoId: string | null = null;
+  private playNowBusy = false;
 
   constructor(private player: Player) {}
 
@@ -85,6 +90,9 @@ export default class ListenTogether {
     const result = await this.request("/listen/join", { name: name.trim() }, token);
     if (!/^[a-f0-9]{64}$/.test(result.token)) throw new Error("Invalid session response.");
     this.token = result.token;
+    this.guestReady = false;
+    this.holdVideoId = null;
+    this.lastLocalVideoId = null;
     this.status = { role: "guest", invite: "", connected: true, error: "", snapshot: null };
     const generation = ++this.generation;
     void this.poll(generation);
@@ -136,7 +144,14 @@ export default class ListenTogether {
       this.status.snapshot = snapshot;
       this.status.connected = true;
       this.status.error = "";
-      await this.player.sync({ ...p, position: p.position + (p.playing && !p.buffering && !p.adPlaying ? Math.min((Date.now() - start) / 2000, 2) : 0) });
+      if (this.holdVideoId && Date.now() < this.holdUntil && p.videoId !== this.holdVideoId) {
+        // Guest picked a song; wait for the host before syncing away from it.
+      } else {
+        if (this.holdVideoId && p.videoId === this.holdVideoId) this.holdVideoId = null;
+        await this.player.sync({ ...p, position: p.position + (p.playing && !p.buffering && !p.adPlaying ? Math.min((Date.now() - start) / 2000, 2) : 0) });
+        this.guestReady = true;
+        if (p.videoId) this.lastLocalVideoId = p.videoId;
+      }
     } catch (error) {
       if (generation !== this.generation) return;
       this.status.connected = false;
@@ -153,6 +168,28 @@ export default class ListenTogether {
     return this.getStatus();
   }
 
+  /** When a guest starts a different song locally, switch the party to it. */
+  public onLocalPlayback(videoId: string | null, adPlaying: boolean) {
+    if (this.status.role !== "guest" || !this.guestReady || adPlaying || this.playNowBusy) return;
+    if (!videoId || !/^[A-Za-z0-9_-]{11}$/.test(videoId)) return;
+    const partyId = this.status.snapshot?.playback?.videoId ?? null;
+    if (videoId === partyId || videoId === this.lastLocalVideoId || videoId === this.holdVideoId) {
+      this.lastLocalVideoId = videoId;
+      return;
+    }
+    this.lastLocalVideoId = videoId;
+    this.holdVideoId = videoId;
+    this.holdUntil = Date.now() + 8000;
+    this.playNowBusy = true;
+    void this.command({ type: "playNow", videoId })
+      .catch(() => {
+        if (this.holdVideoId === videoId) this.holdVideoId = null;
+      })
+      .finally(() => {
+        this.playNowBusy = false;
+      });
+  }
+
   public controls(enabled: boolean) {
     if (!this.server) throw new Error("Only the host can change permissions.");
     this.server.setControls(enabled === true);
@@ -162,6 +199,10 @@ export default class ListenTogether {
   public async leave() {
     ++this.generation;
     clearTimeout(this.timer);
+    this.guestReady = false;
+    this.holdVideoId = null;
+    this.lastLocalVideoId = null;
+    this.playNowBusy = false;
     if (this.server) {
       await this.server.app.close();
       this.server = undefined;

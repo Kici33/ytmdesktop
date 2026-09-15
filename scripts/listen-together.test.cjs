@@ -67,8 +67,10 @@ test("session authentication, permissions, serialized queue additions and revoca
   assert.equal((await request("GET", "/listen/state", token)).json().members.length, 2);
   assert.equal((await request("POST", "/listen/command", token, { type: "pause" })).statusCode, 403);
   assert.equal((await request("POST", "/listen/command", token, { type: "add", videoId: "abcdefghijk", next: true })).statusCode, 403);
+  assert.equal((await request("POST", "/listen/command", token, { type: "playNow", videoId: "12345678901" })).statusCode, 200);
+  assert.equal(calls.at(-1)?.type, "playNow");
   await Promise.all([0, 1].map(() => request("POST", "/listen/command", token, { type: "add", videoId: "abcdefghijk", next: false })));
-  assert.equal(calls.length, 2);
+  assert.equal(calls.filter(c => c.type === "add").length, 2);
   server.setControls(true);
   assert.equal((await request("POST", "/listen/command", token, { type: "pause" })).statusCode, 200);
   server.setControls(false);
@@ -150,6 +152,42 @@ test("real HTTP guest follows host, adds songs, observes pause/seek and stops sy
   assert.equal(server.snapshot().members.length, 1);
 });
 
+test("guest playing a local song switches the party and holds sync until the host catches up", async t => {
+  const state = playback();
+  const commands = [];
+  const server = await createListenServer({
+    name: "Host",
+    getPlayback: () => state,
+    command: async c => {
+      commands.push(c);
+      if (c.type === "playNow") {
+        await delay(1500);
+        state.videoId = c.videoId;
+      }
+    }
+  });
+  await server.app.listen({ host: "127.0.0.1", port: 0 });
+  t.after(() => server.app.close());
+  const received = [];
+  const guest = new ListenTogether({
+    getPlayback: playback,
+    command: async () => {},
+    sync: async p => {
+      received.push(p);
+    }
+  });
+  t.after(() => guest.leave());
+  await guest.join("Friend", `http://127.0.0.1:${server.app.server.address().port}#${server.inviteToken}`);
+  await until(() => received.length > 0);
+  const before = received.length;
+  guest.onLocalPlayback("12345678901", false);
+  await until(() => commands.some(c => c.type === "playNow" && c.videoId === "12345678901"));
+  await delay(1100);
+  assert.equal(received.length, before);
+  assert.equal(received.at(-1).videoId, "abcdefghijk");
+  await until(() => received.some(p => p.videoId === "12345678901"));
+});
+
 test("malformed host state is not forwarded to the player", async t => {
   const server = await createListenServer({ name: "Host", getPlayback: () => ({ ...playback(), position: NaN }), command: async () => {} });
   await server.app.listen({ host: "127.0.0.1", port: 0 });
@@ -189,15 +227,39 @@ function playerFixture() {
       event.detail.returnValue.push({ ajaxPromise: Promise.resolve() });
     }
   };
+  const queue = {
+    dispatch: action => calls.push(["queue", action])
+  };
   const context = {
-    document: { querySelector: () => element, dispatchEvent: e => calls.push(["navigate", e]) },
+    document: {
+      querySelector: selector => (selector === "#queue" ? queue : element),
+      dispatchEvent: e => calls.push(["navigate", e])
+    },
     CustomEvent: class {
       constructor(type, options) {
         this.type = type;
         Object.assign(this, options);
       }
     },
-    window: { __YTMD_HOOK__: { ytmStore: { getState: () => ({ player: { adPlaying: false } }) } } },
+    window: {
+      __YTMD_HOOK__: {
+        ytmStore: {
+          getState: () => ({
+            player: { adPlaying: false },
+            queue: {
+              items: [
+                {
+                  playlistPanelVideoRenderer: {
+                    videoId: "abcdefghijk",
+                    navigationEndpoint: { watchEndpoint: { videoId: "abcdefghijk" } }
+                  }
+                }
+              ]
+            }
+          })
+        }
+      }
+    },
     Date
   };
   const run = vm.runInNewContext(fs.readFileSync("src/renderer/ytmview/scripts/listentogether.script.js", "utf8"), context);
@@ -227,4 +289,13 @@ test("queue actions use YouTube service requests and preserve play-next position
   calls.length = 0;
   await run({ type: "add", videoId: "12345678901", next: true });
   assert.equal(calls[0][1].detail.args[1].queueAddEndpoint.queueInsertPosition, "INSERT_AFTER_CURRENT_VIDEO");
+  calls.length = 0;
+  run({ type: "remove", index: 0, videoId: "abcdefghijk" });
+  assert.equal(calls[0][0], "queue");
+  assert.equal(calls[0][1].type, "REMOVE_ITEM");
+  assert.equal(calls[0][1].payload, 0);
+  assert.throws(() => run({ type: "remove", index: 0, videoId: "12345678901" }), /queue changed/i);
+  calls.length = 0;
+  run({ type: "playNow", videoId: "12345678901" });
+  assert.equal(calls[0][0], "navigate");
 });

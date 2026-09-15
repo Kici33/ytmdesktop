@@ -109,8 +109,8 @@ onUnmounted(() => {
         <label>Invite friends<input :value="status.invite" readonly @focus="selectInvite" /></label>
         <button :disabled="busy" @click="action('copy')">Copy invite</button>
         <label class="permission"
-          ><input type="checkbox" :checked="status.snapshot?.allowControls" :disabled="busy" @change="changeControls" />Let guests pause, skip, seek and choose
-          songs</label
+          ><input type="checkbox" :checked="status.snapshot?.allowControls" :disabled="busy" @change="changeControls" />Let guests pause, skip, seek, choose and
+          remove songs</label
         >
       </template>
       <p class="muted">{{ status.snapshot?.members.map(member => member.name).join(" · ") }}</p>
@@ -142,11 +142,15 @@ onUnmounted(() => {
             <strong>{{ track.title }}</strong
             ><span class="muted">{{ track.author }}</span>
           </div>
-          <button v-if="canControl" :disabled="busy" @click="command({ type: 'select', index: track.index, videoId: track.videoId })">Play</button>
+          <div v-if="canControl" class="buttons queue-actions">
+            <button :disabled="busy" @click="command({ type: 'select', index: track.index, videoId: track.videoId })">Play</button>
+            <button :disabled="busy" @click="command({ type: 'remove', index: track.index, videoId: track.videoId })">Remove</button>
+          </div>
         </li>
       </ol>
       <p class="muted">
-        Ads, buffering and songs unavailable to a listener can temporarily interrupt synchronization. Playback catches up once the song is ready.
+        Playing a song in YouTube Music switches the party to that track. Ads, buffering and songs unavailable to a listener can temporarily interrupt
+        synchronization. Playback catches up once the song is ready.
       </p>
     </template>
   </section>
@@ -258,6 +262,10 @@ button:disabled {
 }
 .queue li strong {
   font-size: 13px;
+}
+.queue-actions {
+  margin: 0;
+  flex-shrink: 0;
 }
 details {
   margin: 12px 0;

@@ -56,15 +56,16 @@ export async function createListenServer(options: { name: string; getPlayback: (
     routes.get("/listen/state", () => snapshot());
     routes.post("/listen/command", { config: { rateLimit: { max: 30, timeWindow: 60000 } } }, async (request, reply) => {
       const command = validateListenCommand(request.body);
-      if (command.type !== "add" && !allowControls) return reply.code(403).send({ error: "Only the host can control playback." });
+      const guestFree = command.type === "playNow" || (command.type === "add" && !command.next);
       if (command.type === "add" && command.next && !allowControls) return reply.code(403).send({ error: "Only the host can choose Play next." });
+      if (!guestFree && !allowControls) return reply.code(403).send({ error: "Only the host can control playback." });
       if (pendingCommands >= 5) return reply.code(429).send({ error: "The queue is busy. Try again in a moment." });
       const memberToken = request.headers.authorization?.replace(/^Bearer /, "") ?? "";
       pendingCommands++;
       const pending = commands
         .then(async () => {
           if (stopped || !members.has(memberToken)) throw new Error("The session has ended or you have left.");
-          if (!allowControls && (command.type !== "add" || command.next)) throw new Error("The host has disabled guest playback controls.");
+          if (!allowControls && !guestFree) throw new Error("The host has disabled guest playback controls.");
           await options.command(command);
         })
         .finally(() => {

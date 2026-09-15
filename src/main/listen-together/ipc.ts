@@ -25,35 +25,49 @@ export function setupListenTogether(getView: () => BrowserView, getSettings: () 
       view.webContents.send("listenTogether:execute", id, command);
     });
   };
+  const videoIdOk = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9_-]{11}$/.test(id);
+  const text = (value: unknown, fallback = "") => (typeof value === "string" ? value.slice(0, 1000) : fallback);
   const session = new ListenTogether({
     getPlayback: () => {
       const state = playerStateStore.getState();
+      const id = state.videoDetails?.id;
+      const position = Number.isFinite(state.videoProgress) ? state.videoProgress : 0;
+      const duration = Number.isFinite(state.videoDetails?.durationSeconds) ? state.videoDetails.durationSeconds : 0;
       return {
-        videoId: state.videoDetails?.id ?? null,
-        title: state.videoDetails?.title ?? "Nothing playing",
-        author: state.videoDetails?.author ?? "",
-        position: Number.isFinite(state.videoProgress) ? state.videoProgress : 0,
-        duration: Number.isFinite(state.videoDetails?.durationSeconds) ? state.videoDetails.durationSeconds : 0,
+        videoId: videoIdOk(id) ? id : null,
+        title: text(state.videoDetails?.title, "Nothing playing") || "Nothing playing",
+        author: text(state.videoDetails?.author),
+        position: Math.min(Math.max(position, 0), 86400),
+        duration: Math.min(Math.max(duration, 0), 86400),
         playing: state.trackState === VideoState.Playing,
         buffering: state.trackState === VideoState.Buffering || isLoading(),
-        adPlaying: state.adPlaying,
-        queue: (state.queue?.items ?? []).slice(0, 500).map((item, index) => ({
-          index,
-          videoId: item.videoId,
-          title: item.title,
-          author: item.author
-        }))
+        adPlaying: state.adPlaying === true,
+        // Drop queue rows YouTube leaves without a real video id; keep original indexes for select.
+        queue: (state.queue?.items ?? [])
+          .slice(0, 500)
+          .map((item, index) => ({
+            index,
+            videoId: item.videoId,
+            title: text(item.title),
+            author: text(item.author)
+          }))
+          .filter(item => videoIdOk(item.videoId))
       };
     },
     command: async command => {
       const state = playerStateStore.getState();
       if (command.type === "seek" && command.position > (state.videoDetails?.durationSeconds ?? 0)) throw new Error("Seek position is outside this song.");
-      if (command.type === "select" && state.queue?.items[command.index]?.videoId !== command.videoId)
+      if ((command.type === "select" || command.type === "remove") && state.queue?.items[command.index]?.videoId !== command.videoId)
         throw new Error("The queue changed. Choose the song again.");
       await execute(command);
     },
     sync: playback => execute({ type: "sync", playback })
   });
+  const onPlayerState = () => {
+    const state = playerStateStore.getState();
+    session.onLocalPlayback(state.videoDetails?.id ?? null, state.adPlaying === true);
+  };
+  playerStateStore.addEventListener(onPlayerState);
   let busy = false;
   ipcMain.handle("listenTogether:request", async (event, action: string, payload: Record<string, unknown> = {}) => {
     if (event.sender !== getSettings()?.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error("Unauthorized window.");
@@ -86,6 +100,7 @@ export function setupListenTogether(getView: () => BrowserView, getSettings: () 
     }
   });
   app.on("before-quit", () => {
+    playerStateStore.removeEventListener(onPlayerState);
     void session.leave();
   });
 }

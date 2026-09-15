@@ -44,11 +44,24 @@
     case "next":
       api.nextVideo();
       return;
+    case "playNow":
+      window.__ytmdListenNavigation = { id: command.videoId, at: Date.now() };
+      navigate(command.videoId);
+      return;
     case "select": {
       const item = window.__YTMD_HOOK__.ytmStore.getState().queue.items[command.index];
       const renderer = item?.playlistPanelVideoRenderer ?? item?.playlistPanelVideoWrapperRenderer?.primaryRenderer?.playlistPanelVideoRenderer;
       if (renderer?.videoId !== command.videoId || !renderer.navigationEndpoint) throw new Error("The queue changed. Choose the song again.");
       document.dispatchEvent(new CustomEvent("yt-navigate", { detail: { endpoint: renderer.navigationEndpoint } }));
+      return;
+    }
+    case "remove": {
+      const item = window.__YTMD_HOOK__.ytmStore.getState().queue.items[command.index];
+      const renderer = item?.playlistPanelVideoRenderer ?? item?.playlistPanelVideoWrapperRenderer?.primaryRenderer?.playlistPanelVideoRenderer;
+      if (renderer?.videoId !== command.videoId) throw new Error("The queue changed. Choose the song again.");
+      const queue = document.querySelector("#queue");
+      if (!queue?.dispatch) throw new Error("YouTube Music could not remove this song from the queue.");
+      queue.dispatch({ type: "REMOVE_ITEM", payload: command.index });
       return;
     }
     case "add": {
